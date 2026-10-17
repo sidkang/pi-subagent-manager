@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ModelSelectionMode } from "./prefs/settings.ts";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
@@ -197,7 +198,15 @@ export interface ThreadService {
   /** Optional for portable adapters; the runtime manager always implements this. */
   observeTranscript?(path: string, listener: TranscriptListener): Promise<TranscriptObservation>;
   spawn(
-    args: { path: string; type: string; task: string; wait?: boolean; timeoutMs?: number },
+    args: {
+      path: string;
+      type: string;
+      task: string;
+      wait?: boolean;
+      timeoutMs?: number;
+      /** `provider/model-id[:thinking]` from the type's models list. */
+      model?: string;
+    },
     signal?: AbortSignal,
   ): Promise<ThreadView>;
   /** message and/or timeoutMs (30s–5min). timeoutMs alone only re-arms a running child's report-only timeout. */
@@ -247,4 +256,6 @@ export interface ManagerOptions {
   maxDepth?: number;
   maxThreads?: number;
   maxConcurrent?: number;
+  /** Current model picking mode; a per-spawn model choice is refused under `use-current`. */
+  getModelSelection?(): ModelSelectionMode;
 }

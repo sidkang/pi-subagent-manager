@@ -178,6 +178,7 @@ Which model an agent gets when its session starts.
 | `use-current` — **Use Current**                         | Ignores `models`; uses the main session's current model.                 | One model for everything, or quick testing.                                                |
 
 - Types with no `models` inherit the parent's model in both Pick First modes.
+- An `agent_spawn` `model` choice replaces the list for that agent with the chosen entry, so the same availability and scope checks apply to it.
 - Your list's order decides, not the scoped list's order.
 - No match → spawn fails clearly. An empty `/scoped-models` matches nothing.
 - `use-current` always uses the **main** session's model, even for nested or reopened agents. Thinking levels stay per-agent.

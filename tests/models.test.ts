@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  chooseModel,
   getModelPreferences,
   selectPreferredModel,
   ModelPreferenceError,
@@ -68,6 +69,44 @@ test("selectPreferredModel errors name the agent, preferences and available mode
   );
 });
 
+test("chooseModel narrows a copy to one listed model and reads pi's :thinking suffix", () => {
+  const type = {
+    name: "worker",
+    models: ["p/first", "cursor/x@1m:fast", "p/odd:high"],
+    thinkingLevel: "low" as const,
+  };
+  const before = structuredClone(type);
+  assert.deepEqual(chooseModel(type, "p/first"), { ...type, models: ["p/first"] });
+  assert.deepEqual(chooseModel(type, "p/first:xhigh"), {
+    ...type,
+    models: ["p/first"],
+    thinkingLevel: "xhigh",
+  });
+  assert.deepEqual(chooseModel(type, "cursor/x@1m:fast").models, ["cursor/x@1m:fast"]);
+  assert.deepEqual(chooseModel(type, "cursor/x@1m:fast:max"), {
+    ...type,
+    models: ["cursor/x@1m:fast"],
+    thinkingLevel: "max",
+  });
+  assert.deepEqual(chooseModel(type, "p/odd:high"), { ...type, models: ["p/odd:high"] });
+  assert.deepEqual(chooseModel({ name: "legacy", model: "p/legacy" }, "p/legacy:max"), {
+    name: "legacy",
+    models: ["p/legacy"],
+    thinkingLevel: "max",
+  });
+  assert.deepEqual(type, before);
+});
+
+test("chooseModel refuses models outside the list and types that inherit their model", () => {
+  const type = { name: "reviewer", models: ["p/first", "p/second"] };
+  assert.throws(
+    () => chooseModel(type, "p/other:high"),
+    /reviewer[\s\S]*\[p\/first, p\/second\][\s\S]*"p\/other"/,
+  );
+  assert.throws(() => chooseModel(type, "p/first:fast"), /"p\/first:fast"/);
+  assert.throws(() => chooseModel({ name: "inherits" }, "p/first"), /inherits[\s\S]*omit model/);
+});
+
 test("agent_types exposes only names, descriptions and resolved settings in compact text", async () => {
   const definition = (fields: Partial<AgentType>): AgentType => ({
     name: "worker",
@@ -100,7 +139,13 @@ test("agent_types exposes only names, descriptions and resolved settings in comp
   const before = structuredClone(types);
   const output = await tool.execute("list-types", {}, undefined, undefined, {} as never);
   assert.deepEqual(output.details, [
-    { name: "worker", description: "Worker", model: "p/second", thinkingLevel: "high" },
+    {
+      name: "worker",
+      description: "Worker",
+      model: "p/second",
+      thinkingLevel: "high",
+      models: ["p/second", "p/first"],
+    },
     { name: "legacy", description: "Worker", model: "p/legacy", thinkingLevel: "low" },
     { name: "suggested", description: "Worker", model: "p/inherited", thinkingLevel: "low" },
   ]);
@@ -108,7 +153,7 @@ test("agent_types exposes only names, descriptions and resolved settings in comp
     {
       type: "text",
       text: [
-        "worker (p/second, thinking: high): Worker",
+        "worker (p/second, thinking: high; models: p/second, p/first): Worker",
         "legacy (p/legacy, thinking: low): Worker",
         "suggested (p/inherited, thinking: low): Worker",
       ].join("\n"),

@@ -11,7 +11,7 @@ The allow/block tool picker lists session tools flat, except MCP tools named `mc
 | Tool           | Purpose                                              |
 | -------------- | ---------------------------------------------------- |
 | `agent_types`  | Names, descriptions, resolved models and thinking    |
-| `agent_spawn`  | Start `{path, type, task, wait?, timeoutMs?}`. Waits by default. |
+| `agent_spawn`  | Start `{path, type, task, model?, wait?, timeoutMs?}`. Waits by default. |
 | `agent_wait`   | Wait for settlement; optional `timeoutMs`            |
 | `agent_steer`  | Send `{path, message?, timeoutMs?}`; queues/resumes and/or re-arms timeout|
 | `agent_status` | Inspect one path or list visible threads             |
@@ -22,8 +22,16 @@ The allow/block tool picker lists session tools flat, except MCP tools named `mc
 
 `agent_types` returns one compact line per type, with the model and effective thinking level
 that a new child of the caller would use under current settings. Unresolvable types are
-marked unavailable with a reason. Preference lists, advisory model suggestions and UI metadata
-are omitted. Spawning under another parent path can change inherited settings.
+marked unavailable with a reason. A type whose `models` list has several entries also lists them,
+because `agent_spawn` may choose among them. Advisory model suggestions and UI metadata are
+omitted. Spawning under another parent path can change inherited settings.
+
+`agent_spawn` accepts an optional `model` in pi's `provider/model-id[:thinking]` form, such as
+`claude/opus-5.5:xhigh`. The model must be an entry of the type's `models` list. An exact entry wins;
+otherwise a trailing thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is
+split off and sets this agent's thinking level. The choice is kept with the agent, so resuming it
+after a reload uses the same model. Model Picking still applies, so a scoped mode refuses a model
+outside `/scoped-models`, and **Use Current** refuses any choice.
 
 ```json
 {

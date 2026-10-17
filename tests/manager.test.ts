@@ -380,6 +380,66 @@ test("duplicate concurrent spawn is rejected and concurrency/depth limits apply"
   await manager.shutdown();
 });
 
+test("spawn model choice narrows the retained definition and survives restore", async () => {
+  const getType = (name: string): AgentType => ({
+    ...workerType,
+    name,
+    models: ["p/default", "p/strong"],
+    thinkingLevel: "high",
+  });
+  const expected = { ...workerType, models: ["p/strong"], thinkingLevel: "xhigh" };
+  const first = fixture({ getType });
+  await first.manager.spawn("/root", {
+    path: "worker",
+    type: "worker",
+    task: "work",
+    wait: false,
+    model: "p/strong:xhigh",
+  });
+  await tick();
+  assert.deepEqual(first.drivers.get("/root/worker")!.options.type, expected);
+  const saved = first.manager.saved();
+  assert.deepEqual(saved[0]!.definition, expected);
+  await first.manager.shutdown();
+
+  const second = fixture({ getType });
+  second.manager.restore(saved);
+  await second.manager.steer("/root", "worker", "resume");
+  await tick();
+  assert.deepEqual(second.drivers.get("/root/worker")!.options.type, expected);
+  await second.manager.shutdown();
+});
+
+test("spawn refuses an unlisted model or Use Current without reserving a thread", async () => {
+  const getType = (name: string): AgentType => ({ ...workerType, name, models: ["p/default"] });
+  const listed = fixture({ getType });
+  await assert.rejects(
+    listed.manager.spawn("/root", {
+      path: "worker",
+      type: "worker",
+      task: "w",
+      wait: false,
+      model: "p/other",
+    }),
+    /allows models \[p\/default\]/,
+  );
+  const current = fixture({ getType, getModelSelection: () => "use-current" });
+  await assert.rejects(
+    current.manager.spawn("/root", {
+      path: "worker",
+      type: "worker",
+      task: "w",
+      wait: false,
+      model: "p/default",
+    }),
+    /Use Current/,
+  );
+  assert.deepEqual(listed.manager.list(), []);
+  assert.deepEqual(current.manager.list(), []);
+  await listed.manager.shutdown();
+  await current.manager.shutdown();
+});
+
 test("save/restore retains definition snapshot and reopens JSONL on resume", async () => {
   const first = fixture();
   await first.manager.spawn("/root", { path: "worker", type: "worker", task: "work", wait: false });

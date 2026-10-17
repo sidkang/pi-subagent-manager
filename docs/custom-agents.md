@@ -101,7 +101,7 @@ Ask the main model to use it: _"spawn an api-scout at `stripe-webhooks` to check
 | ------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `name`             | yes      | Type name used in `agent_spawn`                                                                                                                                     |
 | `description`      | yes      | Shown to the parent model so it knows when to pick this type                                                                                                        |
-| `models`           | no       | Ordered `provider/model-id` preferences. How they're used depends on [Model Picking](settings.md#model-picking-modelselection). Omit to inherit the parent's model. |
+| `models`           | no       | Ordered `provider/model-id` preferences. How they're used depends on [Model Picking](settings.md#model-picking-modelselection). `agent_spawn` may also choose any entry per call. Omit to inherit the parent's model. |
 | `thinkingLevel`    | no       | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Clamped to what the model supports.                                                                      |
 | `tools`            | no       | `allow` / `block` lists of exact tool names. Applied per [Tool Filtering](settings.md#tool-filtering-toolfiltering).                                                |
 | `color`            | no       | pi semantic color (`accent`, `success`, `warning`, `error`, `muted`, `dim`) for the type pill and path. Default `accent`.                                           |
@@ -129,6 +129,7 @@ In `/agents types`, select **[labs] Icon** and paste the glyph, then save the ag
 - **To delegate**, a type needs `agent_spawn` and `agent_wait` in `allow`.
 - **Include `agent_update` / `agent_pause`** so the agent can report progress or hand back early.
 - **Model matching is exact.** If no preference is available (or scoped, in scoped mode), spawn fails — no silent fallback.
+- **The list bounds per-call choices.** `agent_spawn`'s `model` must name an entry of `models`; a choice outside the list fails.
 - **Unknown tool names fail** rather than widening access.
 - **Edits affect new threads only.** Running and retained threads keep the definition they started with.
 

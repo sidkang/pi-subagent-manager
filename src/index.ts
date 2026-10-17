@@ -635,6 +635,7 @@ export default function piSubagent(pi: ExtensionAPI): void {
     driverFactory = makeDriverFactory();
     const instance = new ThreadManager({
       ...limits,
+      getModelSelection: () => limits.modelSelection,
       createDriver: driverFactory,
       rootSnapshot: () => buildSessionContext(requireContext().sessionManager.getBranch()).messages,
       getType: (name) => store.get(name),

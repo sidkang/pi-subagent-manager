@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ThreadManager } from "./manager.ts";
-import { ModelPreferenceError } from "../prefs/models.ts";
+import { getModelPreferences, ModelPreferenceError } from "../prefs/models.ts";
 import type { AgentType, ResolvedAgentSettings, ThreadView } from "../types.ts";
 
 const path = Type.String({ description: "Absolute agent path, or name relative to the caller" });
@@ -41,13 +41,20 @@ export function agentTools(
   return [
     make(
       "agent_types",
-      "List agent names, descriptions, resolved models and thinking levels for new children of this caller. Reflects current configuration; call before choosing a type. Other parent paths may inherit different settings.",
+      "List agent names, descriptions, resolved models and thinking levels for new children of this caller, plus the models agent_spawn may choose when a type lists several. Reflects current configuration; call before choosing a type. Other parent paths may inherit different settings.",
       Type.Object({}),
       () => {
         const entries = getTypes().map((type) => {
           const { name, description } = type;
           try {
-            return { name, description, ...resolveSettings(type) };
+            const settings = resolveSettings(type);
+            const models = getModelPreferences(type);
+            return {
+              name,
+              description,
+              ...settings,
+              ...(models && models.length > 1 ? { models } : {}),
+            };
           } catch (error) {
             return {
               name,
@@ -70,7 +77,7 @@ export function agentTools(
                   .map((entry) =>
                     "error" in entry
                       ? `${entry.name} (unavailable): ${entry.description}\n  ${entry.error}`
-                      : `${entry.name} (${entry.model}, thinking: ${entry.thinkingLevel}): ${entry.description}`,
+                      : `${entry.name} (${entry.model}, thinking: ${entry.thinkingLevel}${"models" in entry && entry.models ? `; models: ${entry.models.join(", ")}` : ""}): ${entry.description}`,
                   )
                   .join("\n") || "No agent types available.",
             },
@@ -89,6 +96,13 @@ export function agentTools(
         }),
         type: text,
         task: text,
+        model: Type.Optional(
+          Type.String({
+            minLength: 1,
+            description:
+              "Optional provider/model-id from this type's models list in agent_types, with an optional :thinking suffix (off, minimal, low, medium, high, xhigh, max), e.g. claude/opus-5.5:xhigh. Omit for the type's default.",
+          }),
+        ),
         wait: Type.Optional(Type.Boolean()),
         timeoutMs: Type.Optional(
           Type.Integer({

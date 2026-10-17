@@ -17,6 +17,7 @@ import type {
 import { immutableTranscriptValue } from "./transcript.ts";
 import { canonicalPath, inheritContext, isDescendant, parentPath } from "./paths.ts";
 import { DEFAULT_MANAGER_SETTINGS, type ManagerSettings } from "../prefs/settings.ts";
+import { chooseModel } from "../prefs/models.ts";
 
 interface Record {
   view: ThreadView;
@@ -293,7 +294,14 @@ export class ThreadManager {
 
   async spawn(
     caller: string,
-    args: { path: string; type: string; task: string; wait?: boolean; timeoutMs?: number },
+    args: {
+      path: string;
+      type: string;
+      task: string;
+      wait?: boolean;
+      timeoutMs?: number;
+      model?: string;
+    },
     signal?: AbortSignal,
   ): Promise<ThreadView> {
     this.assertLive();
@@ -327,7 +335,15 @@ export class ThreadManager {
     if (this.records.size >= (this.options.maxThreads ?? DEFAULT_MANAGER_SETTINGS.maxThreads))
       throw new Error("Total thread limit reached");
     this.assertCapacity();
-    const type = structuredClone(this.options.getType(args.type));
+    let type = structuredClone(this.options.getType(args.type));
+    if (args.model !== undefined) {
+      if (this.options.getModelSelection?.() === "use-current")
+        throw new Error(
+          "Model picking is Use Current, so every agent runs on the main model; omit model.",
+        );
+      // The narrowed copy is the retained definition, so reopened sessions keep the choice.
+      type = chooseModel(type, args.model);
+    }
     const parentRecord = parent && parent !== "/root" ? this.record(parent) : undefined;
     this.assertStartableAncestors(path);
     // Reservation is synchronous: subtree cancellation sees children even during lazy parent reopen.

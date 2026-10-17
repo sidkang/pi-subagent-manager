@@ -1,3 +1,5 @@
+import { THINKING_LEVELS, type ThinkingLevel } from "../types.ts";
+
 const MODEL_IDENTITY = /^[^\s/]+\/[^\s]+$/;
 
 function validateModelPreference(value: unknown, label: string): string {
@@ -30,6 +32,31 @@ export function getModelPreferences(type: {
   }
   if (hasModel) return [validateModelPreference(type.model, "model")];
   return undefined;
+}
+
+/**
+ * Narrows one spawn's definition copy to a model from the type's own list. The choice uses pi's
+ * `provider/model-id[:thinking]` form: an exact list entry wins, otherwise a trailing thinking level
+ * is split off, so ids such as `cursor/x@1m:fast` keep their colon.
+ */
+export function chooseModel<
+  T extends { name: string; models?: unknown; model?: unknown; thinkingLevel?: ThinkingLevel },
+>(type: T, choice: string): T {
+  const preferences = getModelPreferences(type);
+  if (preferences === undefined)
+    throw new Error(
+      `Agent type ${JSON.stringify(type.name)} has no models list, so it runs on its parent's model; omit model.`,
+    );
+  const colon = choice.lastIndexOf(":");
+  const suffix = choice.slice(colon + 1) as ThinkingLevel;
+  const split = !preferences.includes(choice) && colon !== -1 && THINKING_LEVELS.includes(suffix);
+  const model = split ? choice.slice(0, colon) : choice;
+  if (!preferences.includes(model))
+    throw new Error(
+      `Agent type ${JSON.stringify(type.name)} allows models [${preferences.join(", ")}], not ${JSON.stringify(model)}.`,
+    );
+  const { model: _legacy, ...rest } = type;
+  return { ...rest, models: [model], ...(split ? { thinkingLevel: suffix } : {}) } as T;
 }
 
 export function modelIdentity(model: { provider: string; id: string }): string {
