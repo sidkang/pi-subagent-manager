@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ThreadManager } from "./manager.ts";
+import type { ModelSelectionMode } from "../prefs/settings.ts";
 import { getModelPreferences, ModelPreferenceError } from "../prefs/models.ts";
 import type { AgentType, ResolvedAgentSettings, ThreadView } from "../types.ts";
 
@@ -24,6 +25,8 @@ export function agentTools(
   caller: string,
   getTypes: () => AgentType[],
   resolveSettings: (type: AgentType) => ResolvedAgentSettings,
+  /** Use Current runs every agent on the main model, so per-spawn model choices are not offered. */
+  getModelSelection: () => ModelSelectionMode | undefined = () => undefined,
 ): ToolDefinition[] {
   const threads = () => getManager().scope(caller);
   const make = (
@@ -53,7 +56,9 @@ export function agentTools(
               name,
               description,
               ...settings,
-              ...(models && models.length > 1 ? { models } : {}),
+              ...(models && models.length > 1 && getModelSelection() !== "use-current"
+                ? { models }
+                : {}),
             };
           } catch (error) {
             return {

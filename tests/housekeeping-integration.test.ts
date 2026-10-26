@@ -5,7 +5,6 @@ import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
-  REGISTRY_ENTRY,
   withOfflineHarness,
   type LoggedRequest,
 } from "./helpers/integrationHarness.ts";
@@ -141,7 +140,7 @@ test(
         // Never persisted into the session registry.
         const entries = session.sessionManager
           .getEntries()
-          .filter((e) => e.type === "custom" && e.customType === REGISTRY_ENTRY);
+          .filter((e) => e.type === "custom" && String(e.customType).startsWith("pi-subagent:registry:"));
         assert.ok(entries.length > 0);
         assert.doesNotMatch(JSON.stringify(entries), /Reading the project notes/);
         release();

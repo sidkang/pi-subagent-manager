@@ -26,11 +26,16 @@ import { ChecklistMetaMirror, checklistStatus } from "./orch/checklist-integrati
 import { agentTools } from "./orch/tools.ts";
 import { editAgentTypes, updateWidget } from "./ui/ui.ts";
 import { canOpenDialog, dialogMenu } from "./ui/dialog.ts";
-import type { SavedThread, ThreadEvent, ThreadView } from "./types.ts";
+import type { ThreadEvent, ThreadView } from "./types.ts";
 import { COST_ENTRY, CostLedger } from "./orch/cost-ledger.ts";
+import {
+  REGISTRY_V2,
+  diffRegistry,
+  foldRegistry,
+  type RegistryState,
+} from "./orch/registry.ts";
 import { CostFooterController } from "./ui/cost-footer.ts";
 
-const REGISTRY_ENTRY = "pi-subagent:registry:v1";
 const ROOT_MAILBOX_ENTRY = "pi-subagent:root-mailbox:v1";
 const ROOT_SUMMARY_MESSAGE = "pi-subagent:final-recap";
 const ROOT_WAKE_MESSAGE = "pi-subagent:wake";
@@ -232,7 +237,12 @@ export default function piSubagent(pi: ExtensionAPI): void {
     };
     ctx.ui.setEditorComponent(navigationEditorFactory);
   };
-  let persistenceSignature = "";
+  // Registry state of the current branch as last written or read. Patches are relative to it.
+  let registryBaseline: RegistryState | undefined;
+  // Id of the newest registry entry we know sits on the current branch.
+  let registryEntryId: string | undefined;
+  // Set when the branch holds a registry we cannot interpret: writing would hide the damage.
+  let registryFailure: string | undefined;
   let migrationRequested = false;
   let importInProgress = false;
   const importAgents = async (ctx: ExtensionContext, firstRun: boolean) => {
@@ -275,17 +285,75 @@ export default function piSubagent(pi: ExtensionAPI): void {
     if (!context) throw new Error("No active Pi session");
     return context;
   };
+  const loadRegistry = (ctx: ExtensionContext): RegistryState | undefined => {
+    const branch = ctx.sessionManager.getBranch();
+    registryFailure = undefined;
+    registryEntryId = undefined;
+    try {
+      registryBaseline = foldRegistry(branch);
+    } catch (error) {
+      registryBaseline = undefined;
+      registryFailure = error instanceof Error ? error.message : String(error);
+      if (limits.subagentMode !== "off")
+        ctx.ui.notify(
+          `Subagent registry is unreadable; further changes are not saved. ${registryFailure}`,
+          "error",
+        );
+      return undefined;
+    }
+    for (let i = branch.length - 1; i >= 0; i--) {
+      const entry = branch[i]!;
+      if (entry.type === "custom" && entry.customType?.startsWith("pi-subagent:registry:")) {
+        registryEntryId = entry.id;
+        break;
+      }
+    }
+    return registryBaseline;
+  };
+  /** Newest registry entry on the active branch, found without materializing the branch. */
+  const nearestRegistryId = (ctx: ExtensionContext) => {
+    const sessions = ctx.sessionManager;
+    for (let entry = sessions.getLeafEntry(); entry; ) {
+      if (entry.type === "custom" && entry.customType?.startsWith("pi-subagent:registry:"))
+        return entry.id;
+      entry = entry.parentId ? sessions.getEntry(entry.parentId) : undefined;
+    }
+    return undefined;
+  };
   const persist = () => {
-    if (!manager) return;
-    const threads = manager.saved();
-    const signature = JSON.stringify(threads);
-    if (signature !== persistenceSignature) {
-      pi.appendEntry(REGISTRY_ENTRY, {
-        version: 1,
-        rootSessionId: requireContext().sessionManager.getSessionId(),
-        threads,
-      });
-      persistenceSignature = signature;
+    if (!manager || registryFailure) return;
+    const ctx = requireContext();
+    // A navigation can move the branch under us; patches must extend the branch they land on.
+    if (nearestRegistryId(ctx) !== registryEntryId) {
+      loadRegistry(ctx);
+      if (registryFailure) return;
+    }
+    const next: RegistryState = {
+      rootSessionId: ctx.sessionManager.getSessionId(),
+      threads: manager.savedForPersist(),
+    };
+    let data;
+    try {
+      data = diffRegistry(registryBaseline, next);
+    } catch (error) {
+      registryFailure = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Subagent registry could not be saved: ${registryFailure}`, "error");
+      return;
+    }
+    if (!data) return;
+    try {
+      pi.appendEntry(REGISTRY_V2, data);
+      registryBaseline = next;
+      registryEntryId = ctx.sessionManager.getLeafId() ?? undefined;
+    } catch (error) {
+      // The SDK may already have advanced its in-memory leaf past a failed write; do not retry
+      // or treat the entry as saved. Stop registry writes until the branch is re-attached.
+      registryFailure = error instanceof Error ? error.message : String(error);
+      if (limits.subagentMode !== "off")
+        ctx.ui.notify(
+          `Subagent registry could not be written (${registryFailure}). Registry saving is stopped: stop this session and check disk space and permissions.`,
+          "error",
+        );
     }
   };
   const warnDelivery = (error: unknown) => {
@@ -527,6 +595,7 @@ export default function piSubagent(pi: ExtensionAPI): void {
       path,
       () => store.list(),
       (type) => driverFactory.resolveAgentSettings(type, path),
+      () => limits.modelSelection,
     );
   const rootTools = toolsFor("/root");
   let toolsEnabled: boolean | undefined;
@@ -636,7 +705,6 @@ export default function piSubagent(pi: ExtensionAPI): void {
       agentDir: getAgentDir(),
       includeProject: ctx.isProjectTrusted(),
     });
-    persistenceSignature = "";
     const settingsDiagnostics = loadLimits(ctx);
     syncTools();
     driverFactory = makeDriverFactory();
@@ -672,24 +740,15 @@ export default function piSubagent(pi: ExtensionAPI): void {
     });
     manager = instance;
     if (installEditor) installNavigationEditor(ctx, seedHistory);
-    const entries = ctx.sessionManager.getBranch();
-    const entry = [...entries]
-      .reverse()
-      .find((item) => item.type === "custom" && item.customType === REGISTRY_ENTRY);
-    if (entry?.type === "custom") {
+    const saved = loadRegistry(ctx);
+    if (saved) {
       try {
-        const data = entry.data as {
-          version: number;
-          rootSessionId: string;
-          threads: SavedThread[];
-        };
-        if (data.version !== 1 || !Array.isArray(data.threads))
-          throw new Error("Invalid registry format");
         // Forked parents own a new registry; they must not share writable child transcripts.
-        if (data.rootSessionId === ctx.sessionManager.getSessionId())
-          instance.restore(data.threads);
+        if (saved.rootSessionId === ctx.sessionManager.getSessionId())
+          instance.restore(saved.threads);
         else persist();
       } catch (error) {
+        registryFailure = error instanceof Error ? error.message : String(error);
         if (limits.subagentMode !== "off")
           ctx.ui.notify(`Could not restore subagent registry: ${String(error)}`, "error");
       }

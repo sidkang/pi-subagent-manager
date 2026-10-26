@@ -15,6 +15,7 @@ import { createEventBus, type EventBus } from "@earendil-works/pi-coding-agent";
 import piSubagent from "../src/index.ts";
 import { DEFAULT_MANAGER_SETTINGS, loadManagerSettings } from "../src/prefs/settings.ts";
 import { subagentPrompt } from "../src/orch/prompt.ts";
+import { REGISTRY_V2, foldRegistry } from "../src/orch/registry.ts";
 import {
   IMPORT_REQUEST_PREFIX,
   importWasOffered,
@@ -451,6 +452,92 @@ test("agents reap persists removals, refreshes the widget, and completes by name
     await hooks.get("session_tree")!({}, ctx);
     await command.handler("reap", ctx);
     assert.match(notifications.at(-1)!, /No completed agents eligible/);
+  });
+});
+
+const registryEntries = (ctx: ExtensionCommandContext) =>
+  ctx.sessionManager
+    .getEntries()
+    .filter(
+      (entry) => entry.type === "custom" && entry.customType.startsWith("pi-subagent:registry:"),
+    )
+    .map((entry) => entry as { customType: string; data: any });
+
+test("reap appends a v2 remove patch that folds to the reaped registry", async () => {
+  await withCommands(async ({ command, ctx, hooks, replies }) => {
+    seedThreads(ctx, ["/root/old", "/root/keep"]);
+    await hooks.get("session_tree")!({}, ctx);
+    replies.push("confirm");
+    await command.handler("reap", ctx);
+    const last = registryEntries(ctx).at(-1)!;
+    assert.equal(last.customType, REGISTRY_V2);
+    assert.equal(last.data.op, "patch");
+    assert.ok(last.data.ops.every((op: { kind: string }) => op.kind === "remove"));
+    assert.deepEqual(foldRegistry(ctx.sessionManager.getBranch())!.threads, []);
+  });
+});
+
+test("an uninterpretable registry fails closed: no write, no silent empty base", async () => {
+  await withCommands(async ({ ctx, hooks, notifications }) => {
+    (ctx.sessionManager as SessionManager).appendCustomEntry(REGISTRY_V2, {
+      version: 2,
+      rootSessionId: ctx.sessionManager.getSessionId(),
+      op: "patch",
+      ops: [],
+    });
+    const before = registryEntries(ctx).length;
+    await hooks.get("session_tree")!({}, ctx);
+    assert.match(notifications.join("\n"), /unreadable|Could not restore/);
+    await hooks.get("session_shutdown")!({}, ctx);
+    assert.equal(registryEntries(ctx).length, before);
+  });
+});
+
+test("a failed registry append stops registry writes and never becomes the baseline", async () => {
+  await withCommands(async ({ command, ctx, hooks, replies, notifications }) => {
+    seedThreads(ctx, ["/root/old", "/root/keep"]);
+    await hooks.get("session_tree")!({}, ctx);
+    const sessions = ctx.sessionManager as SessionManager;
+    const original = sessions.appendCustomEntry.bind(sessions);
+    let attempts = 0;
+    sessions.appendCustomEntry = ((type: string, data?: unknown) => {
+      if (type === REGISTRY_V2) {
+        attempts++;
+        throw new Error("ENOSPC: no space left on device");
+      }
+      return original(type, data);
+    }) as typeof sessions.appendCustomEntry;
+    const before = registryEntries(ctx).length;
+    replies.push("confirm");
+    await command.handler("reap", ctx);
+    assert.equal(attempts, 1);
+    assert.match(
+      notifications.join("\n"),
+      /could not be written[\s\S]*ENOSPC[\s\S]*stop this session/,
+    );
+    // Later events, explicit persists and shutdown neither retry nor write.
+    await hooks.get("agent_end")?.({}, ctx);
+    await hooks.get("session_shutdown")!({}, ctx);
+    assert.equal(attempts, 1);
+    sessions.appendCustomEntry = original;
+    assert.equal(registryEntries(ctx).length, before);
+  });
+});
+
+test("a registry copied from another root session is replaced by an explicit empty base", async () => {
+  await withCommands(async ({ ctx, hooks }) => {
+    seedThreads(ctx, ["/root/old"]);
+    (ctx.sessionManager as SessionManager).appendCustomEntry("pi-subagent:registry:v1", {
+      version: 1,
+      rootSessionId: "another-root",
+      threads: [],
+    });
+    await hooks.get("session_tree")!({}, ctx);
+    const last = registryEntries(ctx).at(-1)!;
+    assert.equal(last.customType, REGISTRY_V2);
+    assert.equal(last.data.op, "base");
+    assert.equal(last.data.rootSessionId, ctx.sessionManager.getSessionId());
+    assert.deepEqual(last.data.threads, []);
   });
 });
 
