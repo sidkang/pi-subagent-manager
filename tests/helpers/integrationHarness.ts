@@ -22,9 +22,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import piSubagent from "../../src/index.ts";
 import type { SavedThread } from "../../src/types.ts";
+import { REGISTRY_V1, foldRegistry } from "../../src/orch/registry.ts";
 import type { ManagerSettings } from "../../src/prefs/settings.ts";
 
-export const REGISTRY_ENTRY = "pi-subagent:registry:v1";
+/** Seeds legacy v1 entries; reads go through foldRegistry and accept v1 and v2. */
+export const REGISTRY_ENTRY = REGISTRY_V1;
 
 export type LoggedRequest = {
   call: number;
@@ -48,11 +50,14 @@ export type OfflineHarness = {
 };
 
 export const registry = (manager: SessionManager, fromId?: string) => {
-  const entry = [...manager.getBranch(fromId)]
-    .reverse()
-    .find((item) => item.type === "custom" && item.customType === REGISTRY_ENTRY);
-  assert.ok(entry?.type === "custom", "durable registry entry exists");
-  return entry.data as { version: number; rootSessionId: string; threads: SavedThread[] };
+  const state = foldRegistry(manager.getBranch(fromId));
+  assert.ok(state, "durable registry entry exists");
+  // Round-trip like a reopened file so assertions see only JSON-visible data.
+  return JSON.parse(JSON.stringify({ version: 2, ...state })) as {
+    version: number;
+    rootSessionId: string;
+    threads: SavedThread[];
+  };
 };
 
 export async function withOfflineHarness(

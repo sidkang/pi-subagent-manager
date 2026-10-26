@@ -204,3 +204,29 @@ test("agent_types keeps unavailable entries without failing the whole listing an
   assert.deepEqual(empty.details, []);
   assert.deepEqual(empty.content, [{ type: "text", text: "No agent types available." }]);
 });
+
+test("agent_types hides choosable models under Use Current and shows them again when switched back", async () => {
+  let mode: "use-current" | "pick-first-scoped" = "use-current";
+  const types: AgentType[] = [
+    { name: "worker", description: "Worker", models: ["p/a", "p/b"], systemPrompt: "Work" },
+  ];
+  const tool = agentTools(
+    () => {
+      throw new Error("Listing types must not require a running manager");
+    },
+    "/root",
+    () => types,
+    (type) => ({ model: type.models![0]!, thinkingLevel: "low" }),
+    () => mode,
+  ).find((entry) => entry.name === "agent_types")!;
+  const list = () => tool.execute("l", {}, undefined, undefined, {} as never);
+  const current = await list();
+  assert.deepEqual(current.details, [
+    { name: "worker", description: "Worker", model: "p/a", thinkingLevel: "low" },
+  ]);
+  assert.doesNotMatch((current.content[0] as { text: string }).text, /models:/);
+  mode = "pick-first-scoped";
+  const picking = await list();
+  assert.deepEqual((picking.details as { models?: string[] }[])[0]!.models, ["p/a", "p/b"]);
+  assert.match((picking.content[0] as { text: string }).text, /models: p\/a, p\/b/);
+});

@@ -199,6 +199,18 @@ export class ThreadManager {
     return view.output ?? "";
   }
   saved(): SavedThread[] {
+    return this.snapshot(true);
+  }
+  /**
+   * Same content as saved(), but `definition` and `inherited` are the live references.
+   * Both are replaced wholesale, never edited in place, so persistence can compare them by
+   * identity instead of cloning. Callers must treat the result as read-only.
+   */
+  savedForPersist(): SavedThread[] {
+    return this.snapshot(false);
+  }
+  private snapshot(clone: boolean): SavedThread[] {
+    const copy = <T>(value: T): T => (clone ? structuredClone(value) : value);
     return [...this.records.values()].map((record) => {
       const current = this.view(record);
       // Explicit durable schema: adding UI fields must not silently change session storage.
@@ -231,10 +243,8 @@ export class ThreadManager {
       if (active(view)) view.status = view.state === "running" ? "Working" : "Starting";
       return {
         view,
-        definition: structuredClone(record.definition),
-        ...(!view.sessionFile && !record.contextPending
-          ? { inherited: structuredClone(record.inherited) }
-          : {}),
+        definition: copy(record.definition),
+        ...(!view.sessionFile && !record.contextPending ? { inherited: copy(record.inherited) } : {}),
       };
     });
   }
