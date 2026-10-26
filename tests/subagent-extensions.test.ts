@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { discoverSubagentExtensions } from "../src/orch/extensions.ts";
+import { discoverSubagentExtensions, selectSubagentExtensions } from "../src/orch/extensions.ts";
 
 const managerEntry = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 
@@ -94,4 +94,71 @@ test("configured discovery skips missing packages rather than installing them", 
   assert.deepEqual(await discoverSubagentExtensions({ cwd, agentDir, projectTrusted: false }), []);
   const { access } = await import("node:fs/promises");
   await assert.rejects(access(installMarker), { code: "ENOENT" });
+});
+
+test("selection intersects trusted discovery and preserves legacy all/none", () => {
+  const available = ["/a.ts", "/b.ts"];
+  assert.deepEqual(selectSubagentExtensions(available, true), available);
+  assert.deepEqual(selectSubagentExtensions(available, false), []);
+  assert.deepEqual(selectSubagentExtensions(available, []), []);
+  assert.deepEqual(selectSubagentExtensions(available, ["/b.ts", "/missing.ts"]), ["/b.ts"]);
+});
+
+test("auto-discovery includes standalone TS/JS and subdir entry points without configuration", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-subagent-auto-extensions-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  // Use a custom agent directory, not an assumed ~/.pi/agent location.
+  const agentDir = path.join(root, "custom-agent-dir");
+  const cwd = path.join(root, "workspace");
+  const userDir = path.join(agentDir, "extensions");
+  const projectDir = path.join(cwd, ".pi", "extensions");
+  const files = [
+    "standalone.ts",
+    "standalone.js",
+    "ts-dir/index.ts",
+    "ts-dir/index.js",
+    "js-dir/index.js",
+  ];
+  for (const base of [userDir, projectDir]) {
+    for (const file of [
+      ...files,
+      "nested/no-entry/helper.ts",
+      ".hidden.ts",
+      "notes.txt",
+      "ignored.ts",
+    ]) {
+      const target = path.join(base, file);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, 'throw new Error("Discovery must not execute factories")');
+    }
+    await writeFile(path.join(base, ".gitignore"), "ignored.ts\n");
+    await symlink(managerEntry, path.join(base, "manager.ts"));
+  }
+  const entries = (base: string) =>
+    ["standalone.ts", "standalone.js", "ts-dir/index.ts", "js-dir/index.js"].map((file) =>
+      path.join(base, file),
+    );
+  const discover = (projectTrusted: boolean) =>
+    discoverSubagentExtensions({ cwd, agentDir, projectTrusted });
+  assert.deepEqual((await discover(false)).sort(), entries(userDir).sort());
+  assert.deepEqual(
+    (await discover(true)).sort(),
+    [...entries(userDir), ...entries(projectDir)].sort(),
+  );
+  // Explicit exclusions must still win over auto-discovery.
+  await writeFile(
+    path.join(agentDir, "settings.json"),
+    JSON.stringify({ extensions: ["-extensions/standalone.ts"] }),
+  );
+  await writeFile(
+    path.join(cwd, ".pi", "settings.json"),
+    JSON.stringify({ extensions: ["-extensions/standalone.js"] }),
+  );
+  assert.deepEqual(
+    (await discover(true)).sort(),
+    [
+      ...entries(userDir).filter((file) => file !== path.join(userDir, "standalone.ts")),
+      ...entries(projectDir).filter((file) => file !== path.join(projectDir, "standalone.js")),
+    ].sort(),
+  );
 });

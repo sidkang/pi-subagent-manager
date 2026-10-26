@@ -724,6 +724,7 @@ export class ThreadManager {
     if (!record.initializing) {
       const signal =
         readOnly && !active(record.view) ? new AbortController().signal : record.startup.signal;
+      let diagnosticDriver: AgentDriver | undefined;
       const creation = Promise.resolve()
         .then(async () => {
           // Inspection and delivery can initialize a reserved child before start().
@@ -744,6 +745,24 @@ export class ThreadManager {
             signal,
             shouldPause: () => record.pauseRequested,
             onEvent: (event) => {
+              if (event.kind === "diagnostic") {
+                if (
+                  this.disposed ||
+                  this.records.get(record.view.path) !== record ||
+                  (diagnosticDriver ? record.driver !== diagnosticDriver : signal.aborted)
+                ) return;
+                record.view.diagnostics = [
+                  ...(record.view.diagnostics ?? []),
+                  event.diagnostic,
+                ].slice(-20);
+                this.emit({
+                  kind: "diagnostic",
+                  thread: this.view(record),
+                  diagnostic: event.diagnostic,
+                  recipient: record.view.parent ?? record.view.owner,
+                });
+                return;
+              }
               if (event.kind === "settings") {
                 if (
                   record.view.model !== event.model ||
@@ -781,6 +800,7 @@ export class ThreadManager {
             throw new Error("Driver startup cancelled");
           }
           record.driver = driver;
+          diagnosticDriver = driver;
           record.driverGeneration = (record.driverGeneration ?? 0) + 1;
           record.observationError = undefined;
           if (record.transcriptListeners?.size) this.attachTranscript(record, driver);

@@ -904,3 +904,38 @@ test("shutdown awaits asynchronous driver disposal", async () => {
   await shutdown;
   assert.equal(finished, true);
 });
+
+test("child diagnostics are attributed to lexical parents and exposed in agent_status", async () => {
+  const { manager, drivers, events } = fixture();
+  try {
+    await manager.spawn("/root", { path: "worker", type: "worker", task: "work", wait: false });
+    await tick();
+    const diagnostic = {
+      level: "error" as const,
+      message: "Classifier unavailable",
+      source: "decisions",
+    };
+    drivers.get("/root/worker")!.options.onEvent({ kind: "diagnostic", diagnostic });
+    assert.deepEqual(manager.scope("/root").get("worker").diagnostics, [diagnostic]);
+    const report = events.find((e) => e.kind === "diagnostic");
+    assert.ok(report && report.kind === "diagnostic");
+    assert.equal(report.recipient, "/root");
+    assert.equal(report.thread.path, "/root/worker");
+    // Reports do not replace status or leak into durable registry snapshots.
+    assert.notEqual(manager.get("worker").status, diagnostic.message);
+    assert.equal("diagnostics" in manager.saved()[0]!.view, false);
+    await manager.spawn("/root", {
+      path: "/root/worker/nested",
+      type: "worker",
+      task: "nested",
+      wait: false,
+    });
+    await tick();
+    drivers.get("/root/worker/nested")!.options.onEvent({ kind: "diagnostic", diagnostic });
+    const nested = events.filter((e) => e.kind === "diagnostic").at(-1)!;
+    assert.ok(nested.kind === "diagnostic");
+    assert.equal(nested.recipient, "/root/worker");
+  } finally {
+    await manager.shutdown();
+  }
+});

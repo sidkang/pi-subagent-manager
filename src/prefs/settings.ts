@@ -42,6 +42,13 @@ export const MODEL_SELECTION_MODES = [
 ] as const;
 export type ModelSelectionMode = (typeof MODEL_SELECTION_MODES)[number];
 
+/** Legacy booleans mean all/none; arrays pin the selected canonical file paths. */
+export type SubagentExtensionSelection = boolean | string[];
+
+export function settingsValueEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 export interface ManagerSettings {
   subagentMode: SubagentMode;
   toolFiltering: ToolFilteringMode;
@@ -52,7 +59,7 @@ export interface ManagerSettings {
   nerdFontIcons: boolean;
   loaderStyle: LoaderStyle;
   finalRecap: boolean;
-  subagentExtensions: boolean;
+  subagentExtensions: SubagentExtensionSelection;
   checklistIntegration: boolean;
   /** [labs] One-line agent work summaries written by the housekeeping model. */
   housekeepingEnabled: boolean;
@@ -128,7 +135,8 @@ function positiveSafeInteger(value: unknown): value is number {
 }
 
 function requirement(key: (typeof KEYS)[number]): string {
-  if (key === "nerdFontIcons" || key === "finalRecap" || key === "subagentExtensions" || key === "checklistIntegration" || key === "housekeepingEnabled") return `${key} must be a boolean`;
+  if (key === "subagentExtensions") return "subagentExtensions must be a boolean or an array of absolute file paths";
+  if (key === "nerdFontIcons" || key === "finalRecap" || key === "checklistIntegration" || key === "housekeepingEnabled") return `${key} must be a boolean`;
   if (key === "housekeepingModel") return "housekeepingModel must be empty or provider/model-id";
   if (key === "subagentMode") return "subagentMode must be off, opportunistic or orchestration";
   if (key === "widgetMode") return "widgetMode must be full or minimal";
@@ -168,9 +176,16 @@ function parseSettings(content: string): Partial<ManagerSettings> {
   for (const key of KEYS) {
     if (!Object.hasOwn(record, key)) continue;
     const value = record[key];
-    if (key === "nerdFontIcons" || key === "finalRecap" || key === "subagentExtensions" || key === "checklistIntegration" || key === "housekeepingEnabled") {
+    if (key === "nerdFontIcons" || key === "finalRecap" || key === "checklistIntegration" || key === "housekeepingEnabled") {
       if (typeof value !== "boolean") throw new Error(requirement(key));
       layer[key] = value;
+      continue;
+    }
+    if (key === "subagentExtensions") {
+      if (typeof value !== "boolean" && !(Array.isArray(value) && value.every(
+        (entry) => typeof entry === "string" && entry.length > 0 && resolve(entry) === entry && !entry.includes("\0"),
+      ))) throw new Error(requirement(key));
+      layer.subagentExtensions = typeof value === "boolean" ? value : [...new Set(value as string[])].sort();
       continue;
     }
     if (key === "housekeepingModel") {
@@ -331,7 +346,7 @@ function serializedSettings(settings: ManagerSettings): string {
   const serialized = `${JSON.stringify(parsed, null, 2)}\n`;
   const confirmed = parseSettings(serialized);
   for (const key of KEYS) {
-    if (confirmed[key] !== parsed[key]) throw new Error(requirement(key));
+    if (!settingsValueEqual(confirmed[key], parsed[key])) throw new Error(requirement(key));
   }
   return serialized;
 }
@@ -440,8 +455,8 @@ export function saveManagerSettings(options: {
 function assertExpectedLayers(current: ManagerSettingsLayers, expected: ManagerSettingsLayers): void {
   if (
     current.scope !== expected.scope ||
-    KEYS.some((key) => current.global[key] !== expected.global[key] ||
-      current.project[key] !== expected.project[key]) ||
+    KEYS.some((key) => !settingsValueEqual(current.global[key], expected.global[key]) ||
+      !settingsValueEqual(current.project[key], expected.project[key])) ||
     current.diagnostics.length !== expected.diagnostics.length ||
     current.diagnostics.some((diagnostic, index) => diagnostic !== expected.diagnostics[index])
   ) {
@@ -473,7 +488,7 @@ export function saveManagerOverrides(options: ManagerSettingsOptions & {
     ? DEFAULT_MANAGER_SETTINGS
     : { ...DEFAULT_MANAGER_SETTINGS, ...current.global };
   const overrides = Object.fromEntries(
-    KEYS.filter((key) => parsed[key] !== inherited[key]).map((key) => [key, parsed[key]]),
+    KEYS.filter((key) => !settingsValueEqual(parsed[key], inherited[key])).map((key) => [key, parsed[key]]),
   );
   const entry = options.scope === "user"
     ? layer(options.agentDir, ["subagent-manager"])

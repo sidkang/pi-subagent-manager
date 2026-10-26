@@ -150,7 +150,7 @@ export function agentTools(
     ),
     make(
       "agent_status",
-      "Read a thread's status or list visible descendants. Root can inspect all trees. Completion retains the session; pause retains it without final answer handback.",
+      "Read a thread's status, including bounded child extension diagnostics, or list visible descendants. Root can inspect all trees. Completion retains the session; pause retains it without final answer handback.",
       Type.Object({ path: Type.Optional(path) }),
       (params) =>
         result(params.path ? compact(threads().get(params.path)) : threads().list().map(compact)),

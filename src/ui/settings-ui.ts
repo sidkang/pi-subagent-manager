@@ -1,4 +1,6 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { basename } from "node:path";
+import { discoverSubagentExtensions } from "../orch/extensions.ts";
 import type { ConfigStore } from "../prefs/config.ts";
 import {
   canOpenDialog,
@@ -9,6 +11,7 @@ import {
 } from "./dialog.ts";
 import {
   DEFAULT_MANAGER_SETTINGS,
+  settingsValueEqual,
   type CostDisplayMode,
   COST_ICONS,
   type CostIcon,
@@ -159,9 +162,9 @@ type SettingsLayers = ReturnType<typeof loadManagerSettingsLayers>;
 /** Persisted changes, not unsaved draft values; theme styling is computed on render. */
 function withProvenance(row: DialogRow, keys: (keyof ManagerSettings)[], layers: SettingsLayers): DialogRow {
   const globalChanged = keys.some((key) => layers.global[key] !== undefined &&
-    layers.global[key] !== DEFAULT_MANAGER_SETTINGS[key]);
+    !settingsValueEqual(layers.global[key], DEFAULT_MANAGER_SETTINGS[key]));
   const projectChanged = keys.some((key) => layers.project[key] !== undefined &&
-    layers.project[key] !== (layers.global[key] ?? DEFAULT_MANAGER_SETTINGS[key]));
+    !settingsValueEqual(layers.project[key], layers.global[key] ?? DEFAULT_MANAGER_SETTINGS[key]));
   return {
     ...row,
     renderIndicators: (theme) =>
@@ -175,6 +178,37 @@ function provenanceLegend(theme: Theme): string {
   const global = theme.fg("accent", "●");
   const project = theme.fg("warning", "●");
   return theme.fg("muted", "Saved: ") + `${global} Global · ${project} Current Project · ${global} ${project} Both`;
+}
+
+/** Selection edits stay in the outer draft until Save and apply. */
+async function configureSubagentExtensions(
+  ctx: ExtensionCommandContext,
+  draft: ManagerSettings,
+  agentDir: string,
+): Promise<void> {
+  const available = await discoverSubagentExtensions({ cwd: ctx.cwd, agentDir, projectTrusted: ctx.isProjectTrusted() });
+  const selected = new Set(draft.subagentExtensions === true ? available : draft.subagentExtensions || []);
+  // Keep stale selections visible and removable; runtime still intersects with discovery.
+  const files = [...new Set([...available, ...selected])].sort();
+  let selectedId: string | undefined;
+  while (true) {
+    const action = await dialogMenu(ctx, "[lab] Subagent extensions", [
+      ...files.map((file) => ({
+        id: file,
+        label: `${selected.has(file) ? "[x]" : "[ ]"} ${basename(file)}`,
+        value: available.includes(file) ? (selected.has(file) ? "On" : "Off") : "Unavailable",
+        help: `${file}\n${available.includes(file) ? "Reload this extension in newly opened subagent sessions." : "Not currently discoverable/trusted; will not load. Toggle Off to remove the saved selection."}\nSpace/Enter toggles. Changes are saved only with outer Save and apply.`,
+      })),
+      { id: "back", label: "Back", help: files.length ? "Return to settings; selection is not saved yet." : "No extensions available (configured or auto-discovered). CLI-only, inline, built-in extensions and this manager are excluded." },
+    ], { selectedId, spaceSelect: true, footer: "↑↓/Tab navigate · Space/Enter toggle · Esc back" });
+    if (!action || action === "back") {
+      draft.subagentExtensions = [...selected].sort();
+      return;
+    }
+    selectedId = action;
+    if (selected.has(action)) selected.delete(action);
+    else selected.add(action);
+  }
 }
 
 /** Edits the shared draft; only the outer settings screen saves or applies it. */
@@ -421,9 +455,9 @@ async function configureAgentsDialog(
         },
         {
           id: "subagentExtensions",
-          label: "[lab] Enable subagent extensions",
-          value: draft.subagentExtensions ? "On" : "Off",
-          help: "Experimental: reload configured user/trusted-project extension hooks in separate subagent sessions (not CLI-only or inline extensions). Bugs and unintended consequences may occur if hooks assume main-session state.\nRead limitations: https://github.com/championswimmer/pi-subagent-manager/blob/main/docs/subagent-extension-limitations.md\nOff by default. Save and apply affects newly opened sessions, not already-open agents.",
+          label: "[lab] Subagent extensions",
+          value: Array.isArray(draft.subagentExtensions) ? `${draft.subagentExtensions.length} selected` : draft.subagentExtensions ? "All (legacy)" : "None",
+          help: "Experimental: reload selected user/trusted-project extension hooks, including auto-discovered .ts/.js files and subdirectory entry points, in separate subagent sessions (not CLI-only or inline extensions). Bugs and unintended consequences may occur if hooks assume main-session state.\nRead limitations: https://github.com/championswimmer/pi-subagent-manager/blob/main/docs/subagent-extension-limitations.md\nSelect individual extensions in the submenu. None by default. Save and apply affects newly opened sessions, not already-open agents.",
         },
         checklistRow(draft.checklistIntegration, checklistStatus()),
         {
@@ -537,7 +571,7 @@ async function configureAgentsDialog(
         );
         if (styles.includes(style as LoaderStyle)) draft.loaderStyle = style as LoaderStyle;
       } else if (action === "subagentExtensions") {
-        draft.subagentExtensions = !draft.subagentExtensions;
+        await configureSubagentExtensions(ctx, draft, options.agentDir);
       } else if (action === "checklistIntegration") {
         const status = checklistStatus();
         // Turning Off is always allowed; turning On requires current eligibility.

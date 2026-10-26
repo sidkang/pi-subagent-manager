@@ -106,15 +106,25 @@ Both status modes use the same public Pi status API: third-party footers may als
 
 See [Subagent dollar totals in pi-footer](pi-footer.md) for step-by-step setup and copy-paste widget configuration, status-key, and event snippets.
 
-## [labs] Enable subagent extensions (`subagentExtensions`)
+## [labs] Subagent extensions (`subagentExtensions`)
 
-Experimental on/off toggle, **off by default**. Enable **[labs] Enable subagent extensions** in `/agents settings` and save, or set `"subagentExtensions": true`.
+Experimental per-extension chooser, **none enabled by default**. Open **[lab] Subagent extensions** in `/agents settings`. Use ↑/↓ or Tab to navigate, Space/Enter to toggle each extension, and Esc/Back to return. Then **Save and apply** (Ctrl+S) in the outer settings dialog; outer Cancel discards edits. Full paths appear in row help so identically named extensions can be distinguished.
 
-When a subagent session opens, it reloads enabled extension files from user configuration and, only when the main project is trusted, project configuration. Pi package resource filters and disabled-extension settings are respected; missing packages are skipped, never installed. This manager is excluded to avoid starting a second subagent manager inside each child. Each factory receives a child-local runtime and its hooks run against that child's session. Reloaded extension tools take precedence over inherited main-session bridges, including tools registered on `session_start`; tool filtering still applies. Other inherited tools keep their existing bridges.
+`subagentExtensions` accepts an array of canonical absolute extension file paths, for example `"subagentExtensions": ["/home/me/.pi/agent/extensions/example.ts"]`. The selected set is persisted in the existing Global/Current Project settings layer. Legacy `true` still means all discoverable extensions and `false` means none; opening and closing the chooser converts that value to an explicit draft selection, persisted only on Save and apply. Newly discovered extensions are not automatically enabled after an explicit selection is saved. Saved paths that are no longer discoverable are shown as **Unavailable**, can be toggled off, and never load.
 
-**This is configured-file discovery, not exact main-session inheritance. Bugs and unintended consequences are possible.** Read [subagent extension limitations](subagent-extension-limitations.md) before enabling it: the guide covers excluded extensions, configuration drift, `input` hook bypasses, shared side effects, non-interactive UI, and main-session tool bridges.
+The chooser includes **auto-discovered files**, not just paths listed in `settings.json` or packages:
 
-Save and apply affects newly opened sessions, including retained sessions reopened after reload. Already-open agents keep their extension runtime until disposed. The main agent's extensions and tool set are not changed. Leave this off unless your extensions are safe to run across separate sessions.
+- `<agentDir>/extensions/*.ts` and `*.js` (normally `~/.pi/agent/extensions/foo.ts`). The existing Pi `getAgentDir()` resolution honors `PI_CODING_AGENT_DIR`; no home-directory path is hard-coded.
+- Immediate subdirectories with `index.ts` or `index.js` entry points (`index.ts` takes precedence), or Pi package-manifest extension entries. This is not an unrestricted recursive scan.
+- The same auto-discovery under `<cwd>/.pi/extensions`, **only for trusted projects**.
+
+Discovery uses Pi's own resource resolver, keeping its ignore rules, directory/manifest entry-point precedence and disabled-extension patterns. Standalone files need no package manifest or explicit settings entry. This manager is always excluded, including symlinks to it.
+
+When a subagent session opens, it reloads only selected, currently enabled extension files from user auto-discovery/configuration and, only when the main project is trusted, project auto-discovery/configuration. Pi package resource filters and disabled-extension settings are respected; missing packages are skipped, never installed. This manager is excluded to avoid starting a second subagent manager inside each child. Each factory receives a child-local runtime and its hooks run against that child's session. Reloaded extension tools take precedence over inherited main-session bridges, including tools registered on `session_start`; tool filtering still applies. Other inherited tools keep their existing bridges.
+
+**This is filesystem/configuration discovery, not exact main-session inheritance. Bugs and unintended consequences are possible.** Read [subagent extension limitations](subagent-extension-limitations.md) before enabling it: the guide covers excluded extensions, configuration drift, `input` hook bypasses, shared side effects, non-interactive UI, and main-session tool bridges.
+
+Save and apply affects newly opened sessions, including retained sessions reopened after reload. Already-open agents keep their extension runtime until disposed. The main agent's extensions and tool set are not changed. Leave all extensions unselected unless your extensions are safe to run across separate sessions.
 
 ## [labs] Checklist integration (`checklistIntegration`)
 
@@ -273,3 +283,12 @@ The dialog warns about invalid settings layers. Project saves are blocked until 
 invalid Global layer is fixed, rather than persisting a default-based snapshot.
 If settings layers change while the dialog is open, Save and scope transitions
 refuse the stale draft: reopen settings to load the new values before editing.
+
+### Diagnostics from selected child extensions
+
+Selected extensions can emit `pi-subagent-manager:diagnostic` on their child-local
+`pi.events` bus to send bounded info/warning/error reports to the parent UI and
+agent context, without writing stderr. Use the live
+`pi-subagent-manager:diagnostic:probe` handshake before selecting that reporting
+path. This is available only when selected extensions actually load; it does not
+intercept `console.error` or add tools. See [the protocol, limits and example](subagent-extension-limitations.md#child-extension-diagnostics).

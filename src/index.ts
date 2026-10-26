@@ -1,3 +1,4 @@
+import { CAPABILITY_PROBE_CHANNEL, respondDiagnosticCapability, diagnosticAgentText } from "./orch/diagnostics.ts";
 import { randomUUID } from "node:crypto";
 import { buildSessionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -43,6 +44,10 @@ type RootNotification = {
 };
 
 export default function piSubagent(pi: ExtensionAPI): void {
+  let capabilityActive = true;
+  pi.events.on(CAPABILITY_PROBE_CHANNEL, (payload) => {
+    if (capabilityActive && limits.subagentMode !== "off") respondDiagnosticCapability(payload);
+  });
   let context: ExtensionContext | undefined;
   const inheritedTools = createInheritedToolSource(pi);
   let store = new ConfigStore({
@@ -455,17 +460,19 @@ export default function piSubagent(pi: ExtensionAPI): void {
     const elapsed =
       (thread.elapsedMs ?? 0) + (thread.startedAt ? Date.now() - thread.startedAt : 0);
     const message =
-      event.kind === "update"
-        ? `Progress from ${thread.path}: ${event.message}`
-        : event.kind === "timeout"
-          ? `Agent ${thread.path} hit its ${fmtMs(event.timeoutMs)} spawn timeout and is STILL RUNNING (not stopped). ` +
-            `State: ${thread.state}; status: ${thread.status}; elapsed: ${fmtMs(elapsed)}; ` +
-            `tokens: ${thread.inputTokens ?? 0} in / ${thread.outputTokens ?? 0} out.\n` +
-            `Recent output:\n${event.recentOutput || "(none yet)"}\n` +
-            "Decide: agent_steer with timeoutMs only (no message) to be notified again later without disturbing it, agent_wait for it, agent_steer to redirect, agent_stop to cancel, or let it continue."
-          : thread.state === "completed"
-            ? `Agent ${thread.path} completed. Final answer:\n${thread.output?.slice(0, 16000) ?? "(no text)"}${(thread.output?.length ?? 0) > 16000 ? "\n[Output truncated; use agent_output for more.]" : ""}`
-            : `Agent ${thread.path} is ${thread.state}: ${thread.status}. ${thread.state === "paused" ? "No answer handback; send input to resume the same session." : "Session retained for further input."}`;
+      event.kind === "diagnostic"
+        ? diagnosticAgentText(thread.path, event.diagnostic)
+        : event.kind === "update"
+          ? `Progress from ${thread.path}: ${event.message}`
+          : event.kind === "timeout"
+            ? `Agent ${thread.path} hit its ${fmtMs(event.timeoutMs)} spawn timeout and is STILL RUNNING (not stopped). ` +
+              `State: ${thread.state}; status: ${thread.status}; elapsed: ${fmtMs(elapsed)}; ` +
+              `tokens: ${thread.inputTokens ?? 0} in / ${thread.outputTokens ?? 0} out.\n` +
+              `Recent output:\n${event.recentOutput || "(none yet)"}\n` +
+              "Decide: agent_steer with timeoutMs only (no message) to be notified again later without disturbing it, agent_wait for it, agent_steer to redirect, agent_stop to cancel, or let it continue."
+            : thread.state === "completed"
+              ? `Agent ${thread.path} completed. Final answer:\n${thread.output?.slice(0, 16000) ?? "(no text)"}${(thread.output?.length ?? 0) > 16000 ? "\n[Output truncated; use agent_output for more.]" : ""}`
+              : `Agent ${thread.path} is ${thread.state}: ${thread.status}. ${thread.state === "paused" ? "No answer handback; send input to resume the same session." : "Session retained for further input."}`;
     try {
       if (event.recipient === "/root") {
         const recap =
@@ -696,6 +703,7 @@ export default function piSubagent(pi: ExtensionAPI): void {
       ctx.ui.notify(diagnostics.join("\n"), "warning");
   };
   pi.on("session_start", async (event, ctx) => {
+    capabilityActive = true;
     await attachSession(ctx, true, event.reason !== "startup");
     if (limits.subagentMode !== "off") await importAgents(ctx, true);
   });
@@ -720,6 +728,7 @@ export default function piSubagent(pi: ExtensionAPI): void {
   pi.on("session_before_switch", stopWorkingThreads);
   pi.on("session_before_fork", stopWorkingThreads);
   pi.on("session_shutdown", async () => {
+    capabilityActive = false;
     cancelSummary();
     housekeeping.cancelAll();
     generation++;

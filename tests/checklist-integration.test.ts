@@ -269,7 +269,7 @@ async function withExtension(
   const hooks = new Map<string, Function>();
   const pi = {
     getCommands: () => [],
-    events: { emit() {} },
+    events: { emit() {}, on() { return () => {}; } },
     registerTool() {},
     registerCommand() {},
     on: (name: string, handler: Function) => hooks.set(name, handler),

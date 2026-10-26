@@ -654,7 +654,7 @@ test("invalid cost values and icons reject the entire layer and refuse saving", 
   }
 });
 
-test("subagent extensions default off, persist in either scope and require a boolean", (t) => {
+test("subagent extensions preserve legacy booleans and reject invalid scalar settings", (t) => {
   const f = fixture(t);
   assert.equal(load(f).settings.subagentExtensions, false);
   save(f, "user", { ...DEFAULTS, subagentExtensions: true });
@@ -1049,4 +1049,21 @@ test("housekeeping is an opt-in labs pair validated on load and save, persisting
   writeJson(f.projectFile, { housekeepingEnabled: "yes" });
   assert.match(load(f).diagnostics.join("\n"), /housekeepingEnabled must be a boolean/);
   rejects(() => save(f, "user", { ...DEFAULTS, housekeepingEnabled: 1 }), /must be a boolean/);
+});
+
+
+test("extension selections round-trip, override layers and compare structurally", (t) => {
+  const f = fixture(t);
+  const files = [join(f.agentDir, "a.ts"), join(f.agentDir, "b.ts")].sort();
+  const options = { ...f, includeProject: true };
+  save(f, "user", { ...DEFAULTS, subagentExtensions: files });
+  assert.deepEqual(load(f).settings.subagentExtensions, files);
+  const snapshot = loadManagerSettingsLayers(options);
+  saveManagerOverrides({ ...options, scope: "project", settings: { ...snapshot.settings, subagentExtensions: [...files] }, expectedLayers: snapshot });
+  assert.deepEqual(JSON.parse(readFileSync(f.projectFile, "utf8")), {});
+  saveManagerOverrides({ ...options, scope: "project", settings: { ...snapshot.settings, subagentExtensions: [] } });
+  assert.deepEqual(load(f).settings.subagentExtensions, []);
+  for (const invalid of [["relative.ts"], [1], [null], {}]) {
+    rejects(() => save(f, "user", { ...DEFAULTS, subagentExtensions: invalid }), /subagentExtensions must be/);
+  }
 });

@@ -11,6 +11,7 @@ import {
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider, rgbColor } from "@earendil-works/pi-tui";
 import { AGENT_COLORS } from "../src/prefs/config.ts";
+import { createEventBus, type EventBus } from "@earendil-works/pi-coding-agent";
 import piSubagent from "../src/index.ts";
 import { DEFAULT_MANAGER_SETTINGS, loadManagerSettings } from "../src/prefs/settings.ts";
 import { subagentPrompt } from "../src/orch/prompt.ts";
@@ -32,6 +33,7 @@ async function withCommands(
     notifications: string[];
     tools: Map<string, any>;
     widgets: unknown[];
+    events: EventBus;
   }) => Promise<void>,
   options: { initialMode?: "off" | "orchestration" } = {},
 ) {
@@ -69,9 +71,10 @@ async function withCommands(
   });
   let command: any;
   const tools = new Map<string, any>();
+  const events = createEventBus();
   const pi = {
     getCommands: () => [],
-    events: { emit() {} },
+    events,
     registerTool(tool: any) {
       tools.set(tool.name, tool);
     },
@@ -102,7 +105,7 @@ async function withCommands(
   try {
     piSubagent(pi);
     await hooks.get("session_start")!({}, ctx);
-    await body({ command, ctx, hooks, renders, replies, cwd, notifications, tools, widgets });
+    await body({ command, ctx, hooks, renders, replies, cwd, notifications, tools, widgets, events });
   } finally {
     await hooks.get("session_shutdown")?.({}, ctx);
     if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -488,4 +491,19 @@ test("agents reap refuses to bypass confirmation outside the TUI", async () => {
     assert.equal(renders.length, 0);
     assert.ok(command.getArgumentCompletions("tree /root/old"));
   });
+});
+
+
+test("parent public capability probe reports version/protocol only while manager enabled and alive", async () => {
+  for (const initialMode of ["off", "orchestration"] as const) {
+    await withCommands(async ({ events, hooks, ctx }) => {
+      let reply: any;
+      const probe = () => events.emit("pi-subagent-manager:capabilities:probe", { respond(value: unknown) { reply = value; } });
+      probe();
+      if (initialMode === "off") assert.equal(reply, undefined);
+      else { assert.equal(reply.protocol, 1); assert.match(reply.version, /^\d+\.\d+\.\d+$/); }
+      await hooks.get("session_shutdown")!({}, ctx);
+      reply = undefined; probe(); assert.equal(reply, undefined);
+    }, { initialMode });
+  }
 });

@@ -29,7 +29,7 @@ async function isManagerExtension(file: string, packageRoot?: string): Promise<b
 
 /**
  * The public ExtensionAPI cannot inspect the main session's resource loader. This is
- * deliberately configured-file discovery, not exact main-set inheritance: CLI-only,
+ * deliberately filesystem/configuration discovery, not exact main-set inheritance: CLI-only,
  * inline and built-in extensions are not reloaded. Missing packages are never installed.
  */
 export async function discoverSubagentExtensions(options: {
@@ -41,6 +41,10 @@ export async function discoverSubagentExtensions(options: {
     projectTrusted: options.projectTrusted,
   });
   const packages = new DefaultPackageManager({ ...options, settingsManager });
+  // Pi's resolver includes auto-discovery in <agentDir>/extensions and, when
+  // trusted, <cwd>/.pi/extensions: direct .ts/.js files and directory entry points.
+  // Reuse it so index/manifest precedence, ignore rules and disabled-resource
+  // patterns stay identical to Pi instead of bypassing them with a second scan.
   const resources = await packages.resolve(async () => "skip");
   const paths: string[] = [];
   const seen = new Set<string>();
@@ -50,7 +54,18 @@ export async function discoverSubagentExtensions(options: {
     const resolved = await canonical(resource.path);
     if (seen.has(resolved)) continue;
     seen.add(resolved);
-    paths.push(resource.path);
+    paths.push(resolved);
   }
   return paths;
+}
+
+/** Intersect saved selections with current trusted discovery; never load arbitrary saved paths. */
+export function selectSubagentExtensions(
+  available: string[],
+  selection: boolean | readonly string[],
+): string[] {
+  if (selection === true) return [...available];
+  if (selection === false) return [];
+  const selected = new Set(selection);
+  return available.filter((file) => selected.has(file));
 }

@@ -95,7 +95,7 @@ async function fixture(
   let command: any;
   const pi = {
     getCommands: () => [],
-    events: { emit() {} },
+    events: { emit() {}, on() { return () => {}; } },
     on: (event: string, handler: Function) => hooks.set(event, handler),
     registerTool() {},
     registerCommand: (_name: string, definition: any) => { command = definition; },

@@ -25,7 +25,8 @@ type Menu = { title: string; rows: DialogRow[]; selectedId: string | undefined }
 async function run(
   t: TestContext,
   actions: (string | undefined)[],
-  { settings, trusted = false, width = 80, rows = 24, root: existingRoot, agentDir: existingAgentDir, global, project, onMenu, uiTheme = theme, checklistStatus } = {} as {
+  { settings, trusted = false, width = 80, rows = 24, root: existingRoot, agentDir: existingAgentDir, global, project, onMenu, uiTheme = theme, checklistStatus, extensions = [] } = {} as {
+    extensions?: string[];
     settings?: ManagerSettings;
     trusted?: boolean;
     width?: number;
@@ -42,6 +43,10 @@ async function run(
   const root = existingRoot ?? mkdtempSync(join(tmpdir(), "pi-settings-ui-"));
   if (!existingRoot) t.after(() => rmSync(root, { recursive: true, force: true }));
   const agentDir = existingAgentDir ?? root;
+  for (const name of extensions) {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(join(agentDir, "extensions", name), "export default function() {}");
+  }
   const userFile = join(agentDir, "subagent-manager", "settings.json");
   const projectFile = join(root, ".pi", "agent", "subagent-manager", "settings.json");
   for (const [file, contents] of [[userFile, global ?? settings], [projectFile, project]] as const) {
@@ -1020,38 +1025,63 @@ test("Footer submenu and pickers fit narrow terminals and save to project scope"
   }
 });
 
-test("[lab] Enable subagent extensions warns, toggles, saves and restores default off", async (t) => {
-  const enabled = await run(t, ["subagentExtensions", "save"]);
-  const row = enabled.menus[0]!.rows.find((row) => row.id === "subagentExtensions")!;
-  assert.equal(row.label, "[lab] Enable subagent extensions");
-  assert.equal(row.value, "Off");
-  assert.match(row.help!, /Experimental/);
-  assert.match(row.help!, /Bugs and unintended consequences/);
-  assert.match(row.help!, /separate subagent sessions/);
-  assert.match(row.help!, /configured user\/trusted-project extension hooks/);
-  assert.match(row.help!, /not CLI-only or inline extensions/);
-  const limitationsUrl =
-    "https://github.com/championswimmer/pi-subagent-manager/blob/main/docs/subagent-extension-limitations.md";
-  assert.ok(row.help!.includes(`Read limitations: ${limitationsUrl}`));
-  assert.ok(existsSync(new URL("../docs/subagent-extension-limitations.md", import.meta.url)));
-  assert.equal(enabled.loaded.settings.subagentExtensions, true);
-  assert.equal(enabled.applied, 1);
-  const disabled = await run(t, ["subagentExtensions", "save"], {
-    settings: { ...DEFAULT_MANAGER_SETTINGS, subagentExtensions: true },
+test("[lab] Subagent extensions chooses files, saves, cancels and handles empty/narrow views", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-extension-picker-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const file = join(root, "extensions", "one.ts");
+  const second = join(root, "extensions", "two.ts");
+  const enabled = await run(t, ["subagentExtensions", file, "back", "save"], {
+    root, extensions: ["one.ts", "two.ts"],
   });
-  assert.equal(disabled.loaded.settings.subagentExtensions, false);
-  const cancelled = await run(t, ["subagentExtensions", "cancel"]);
+  assert.deepEqual(enabled.loaded.settings.subagentExtensions, [file]);
+  assert.equal(enabled.menus[0]!.rows.find((row) => row.id === "subagentExtensions")!.value, "None");
+  assert.equal(enabled.menus[2]!.rows.find((row) => row.id === file)!.value, "On");
+  assert.equal(enabled.menus[2]!.rows.find((row) => row.id === second)!.value, "Off");
+  const cancelled = await run(t, ["subagentExtensions", second, undefined, "cancel"], { root });
+  assert.deepEqual(cancelled.loaded.settings.subagentExtensions, [file]);
   assert.equal(cancelled.applied, 0);
-  assert.equal(existsSync(cancelled.userFile), false);
-  const defaults = await run(t, ["defaults", "user", "cancel"], {
-    settings: { ...DEFAULT_MANAGER_SETTINGS, subagentExtensions: true },
+  const legacyAll = await run(t, ["subagentExtensions", undefined, "save"], {
+    root, settings: { ...DEFAULT_MANAGER_SETTINGS, subagentExtensions: true },
   });
-  assert.equal(defaults.loaded.settings.subagentExtensions, false);
+  assert.deepEqual(legacyAll.loaded.settings.subagentExtensions, [file, second]);
+  const legacy = await run(t, ["subagentExtensions", file, undefined, "save"], {
+    root, settings: { ...DEFAULT_MANAGER_SETTINGS, subagentExtensions: true },
+  });
+  assert.deepEqual(legacy.loaded.settings.subagentExtensions, [second]);
+  const disabled = await run(t, ["subagentExtensions", second, undefined, "save"], { root });
+  assert.deepEqual(disabled.loaded.settings.subagentExtensions, []);
+  const unavailable = join(root, "missing.ts");
+  const stale = await run(t, ["subagentExtensions", unavailable, undefined, "save"], {
+    root, settings: { ...DEFAULT_MANAGER_SETTINGS, subagentExtensions: [unavailable] },
+  });
+  assert.equal(stale.menus[1]!.rows.find((row) => row.id === unavailable)!.value, "Unavailable");
+  assert.deepEqual(stale.loaded.settings.subagentExtensions, []);
   for (const width of [20, 40, 80]) {
-    const narrow = await run(t, ["subagentExtensions", "save"], { width, trusted: true });
-    assert.equal(narrow.loaded.settings.subagentExtensions, true);
-    assert.ok(narrow.renders.every((lines) => lines.every((line) => visibleWidth(line) <= width)));
+    const empty = await run(t, ["subagentExtensions", undefined, "save"], { width });
+    assert.deepEqual(empty.loaded.settings.subagentExtensions, []);
+    assert.match(empty.menus[1]!.rows[0]!.help!, /No extensions available/);
+    assert.ok(empty.renders.every((lines) => lines.every((line) => visibleWidth(line) <= width)));
   }
+});
+test("extension chooser lists auto-discovered files from custom agentDir and only trusted project files", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-auto-extension-picker-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const agentDir = join(root, "custom-agent-dir");
+  const userFiles = ["standalone.ts", "standalone.js", "nested/index.ts"].map((file) => join(agentDir, "extensions", file));
+  const projectFiles = ["standalone.ts", "nested/index.js"].map((file) => join(root, ".pi", "extensions", file));
+  for (const file of [...userFiles, ...projectFiles]) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "export default function() {}");
+  }
+  // No settings.json or package manifest is needed for these extensions.
+  const userFile = userFiles[0]!;
+  const untrusted = await run(t, ["subagentExtensions", userFile, "back", "save"], { root, agentDir });
+  assert.deepEqual(untrusted.menus[1]!.rows.filter((row) => row.id !== "back").map((row) => row.id).sort(), [...userFiles].sort());
+  assert.deepEqual(untrusted.loaded.settings.subagentExtensions, [userFile]);
+  const projectFile = projectFiles[0]!;
+  const trusted = await run(t, ["subagentExtensions", projectFile, "back", "save"], { root, agentDir, trusted: true });
+  assert.deepEqual(trusted.menus[1]!.rows.filter((row) => row.id !== "back").map((row) => row.id).sort(), [...userFiles, ...projectFiles].sort());
+  assert.deepEqual(trusted.loaded.settings.subagentExtensions, [userFile, projectFile].sort());
 });
 test("Nerd Fonts off filters loader previews, uses ASCII fallback, and saves non-Nerd selections", async (t) => {
   const styles = ["braille", "ascii", "ascii-star", "ascii-pulse"] as const;

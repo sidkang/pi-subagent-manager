@@ -694,3 +694,18 @@ for (const Renderer of [TuiMainScreen, TuiAltScreen]) {
     });
   }
 }
+
+
+test("extension chooser menu supports Space, Enter, navigation and Escape", () => {
+  const results: (string | undefined)[] = [];
+  const menu = new DialogMenu(host(), theme, "Extensions", [
+    { id: "a", label: "[ ] A" }, { id: "b", label: "[x] B" },
+  ], (id) => results.push(id), undefined, undefined, undefined, undefined, true);
+  menu.handleInput(" ");
+  menu.handleInput("\x1b[32u");
+  menu.handleInput("\x1b[32;65u");
+  menu.handleInput(DOWN);
+  menu.handleInput("\r");
+  menu.handleInput(ESC);
+  assert.deepEqual(results, ["a", "a", "a", "b", undefined]);
+});

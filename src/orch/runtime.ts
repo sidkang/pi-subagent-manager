@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath } from "node:fs/promises";
 import {
   createAgentSession,
+  createEventBus,
   createExtensionRuntime,
   ExtensionRunner,
   ModelRegistry,
@@ -27,9 +28,9 @@ import {
 } from "./mailbox.ts";
 import { selectTools } from "../prefs/config.ts";
 import { TranscriptChannel } from "./transcript.ts";
-import { discoverSubagentExtensions } from "./extensions.ts";
+import { discoverSubagentExtensions, selectSubagentExtensions } from "./extensions.ts";
 import type { InheritedToolSource } from "./inherited-tools.ts";
-import type { ModelSelectionMode, ToolFilteringMode } from "../prefs/settings.ts";
+import type { ModelSelectionMode, SubagentExtensionSelection, ToolFilteringMode } from "../prefs/settings.ts";
 import {
   modelIdentity,
   getModelPreferences,
@@ -44,6 +45,14 @@ import {
   type DriverOptions,
   type ThinkingLevel,
 } from "../types.ts";
+
+import {
+  DIAGNOSTIC_CHANNEL,
+  DIAGNOSTIC_PROBE_CHANNEL,
+  respondDiagnosticCapability,
+  diagnosticSink,
+  diagnosticText,
+} from "./diagnostics.ts";
 
 const BUILTINS = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
 /** Persisted before transcript messages so older-leaf restores still carry ownership. */
@@ -176,7 +185,7 @@ export function createDriverFactory(
   getModelSelection: () => ModelSelectionMode = () => "pick-first-scoped",
   getToolFiltering: () => ToolFilteringMode = () => "allowed",
   getInheritedTools: () => InheritedToolSource = () => ({ tools: [], activeNames: [] }),
-  getSubagentExtensions: () => boolean = () => false,
+  getSubagentExtensions: () => SubagentExtensionSelection = () => false,
 ): DriverFactory & {
   resolveAgentSettings(type: AgentType, parentPath: string): ResolvedAgentSettings;
 } {
@@ -274,7 +283,7 @@ export function createDriverFactory(
     const ctx = getRootContext();
     // Tool policy is a startup snapshot; retained live sessions keep their selected set.
     const toolFiltering = getToolFiltering();
-    const subagentExtensions = getSubagentExtensions();
+    const extensionSelection = getSubagentExtensions();
     const rootId = ctx.sessionManager.getSessionId();
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(rootId))
       throw new Error("Unsafe root session id for subagent storage");
@@ -423,9 +432,13 @@ export function createDriverFactory(
         (options.type.tools?.allow?.includes(name) && toolFiltering === "allowed"),
     );
     const projectTrusted = ctx.isProjectTrusted?.() ?? false;
-    const extensionPaths = subagentExtensions
-      ? await discoverSubagentExtensions({ cwd: ctx.cwd, agentDir, projectTrusted })
-      : [];
+    const extensionPaths = extensionSelection === false || (Array.isArray(extensionSelection) && !extensionSelection.length)
+      ? []
+      : selectSubagentExtensions(
+          await discoverSubagentExtensions({ cwd: ctx.cwd, agentDir, projectTrusted }),
+          extensionSelection,
+        );
+    const subagentExtensions = extensionPaths.length > 0;
     // Keep discovery settings OUT of this loader: reload() resolves packages with
     // auto-install enabled. An empty in-memory package/resource list ensures it
     // only loads the already-resolved files and cannot install missing packages.
@@ -436,7 +449,42 @@ export function createDriverFactory(
       parkQueue();
       return { continue: false };
     };
+    // A separate bus per driver: never share parent/other-child extension events.
+    const childEvents = createEventBus();
+    let diagnosticsClosed = false;
+    let diagnosticsInitialized = false;
+    // The startup signal belongs to one run; a stopped driver may be reused.
+    const diagnosticsUnavailable = () =>
+      diagnosticsClosed || (!diagnosticsInitialized && options.signal.aborted);
+    if (subagentExtensions)
+      childEvents.on(DIAGNOSTIC_PROBE_CHANNEL, (payload) => {
+        try {
+          if (
+            diagnosticsUnavailable() ||
+            !payload ||
+            typeof payload !== "object"
+          )
+            return;
+          respondDiagnosticCapability(payload);
+        } catch {
+          /* Untrusted callbacks cannot escape into EventBus's stderr handler. */
+        }
+      });
+    if (subagentExtensions)
+      childEvents.on(
+        DIAGNOSTIC_CHANNEL,
+        diagnosticSink((diagnostic) => {
+          if (diagnosticsUnavailable()) return;
+          options.onEvent({ kind: "diagnostic", diagnostic });
+          try {
+            getRootContext().ui.notify(diagnosticText(options.path, diagnostic), diagnostic.level);
+          } catch {
+            // Agent-facing delivery remains available if the UI is absent/unavailable.
+          }
+        }),
+      );
     const loader = new DefaultResourceLoader({
+      eventBus: childEvents,
       cwd: ctx.cwd,
       agentDir,
       settingsManager,
@@ -525,7 +573,13 @@ export function createDriverFactory(
       ],
     });
     options.signal.throwIfAborted();
-    await loader.reload();
+    try {
+      await loader.reload();
+    } catch (error) {
+      diagnosticsClosed = true;
+      childEvents.clear();
+      throw error;
+    }
     const loadedExtensions = loader.getExtensions();
     // Manager controls remain SDK custom tools so loaded extensions cannot replace
     // them. With reload disabled, preserve the existing SDK bridge behavior exactly.
@@ -594,6 +648,8 @@ export function createDriverFactory(
           // Best-effort cleanup must not hide the SDK's original startup failure.
         });
       }
+      diagnosticsClosed = true;
+      childEvents.clear();
       throw error;
     }
     const unsubscribeExtensionErrors = subagentExtensions
@@ -610,6 +666,8 @@ export function createDriverFactory(
     let shutdownPromise: Promise<void> | undefined;
     const disposeSession = () => {
       if (!subagentExtensions) {
+        diagnosticsClosed = true;
+        childEvents.clear();
         session.dispose();
         return;
       }
@@ -620,6 +678,8 @@ export function createDriverFactory(
           await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
         } finally {
           unsubscribeExtensionErrors();
+          diagnosticsClosed = true;
+          childEvents.clear();
           session.dispose();
         }
       })());
@@ -713,6 +773,7 @@ export function createDriverFactory(
       await disposeSession();
       throw error;
     }
+    diagnosticsInitialized = true;
     const streamFunction = session.agent.streamFunction;
     session.agent.streamFunction = async (requestModel, context, streamOptions) => {
       assertScopedRequestAuthorized(

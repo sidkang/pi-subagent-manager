@@ -196,6 +196,7 @@ export class DialogMenu {
     readonly footer = "↑↓ navigate · Enter select · Esc close",
     private saveId?: string,
     private renderLegend?: (theme: Theme) => string,
+    private spaceSelect = false,
   ) {
     const index = rows.findIndex((row) => row.id === selectedId);
     if (index >= 0) this.selected = index;
@@ -206,7 +207,7 @@ export class DialogMenu {
   handleInput(data: string): void {
     const keys = getKeybindings();
     if (keys.matches(data, "tui.select.cancel")) return this.done(undefined);
-    if (keys.matches(data, "tui.select.confirm"))
+    if (keys.matches(data, "tui.select.confirm") || (this.spaceSelect && matchesKey(data, Key.space)))
       return this.done(this.getSelectedId());
     if (this.saveId && matchesKey(data, Key.ctrl("s")))
       return this.done(this.saveId);
@@ -312,7 +313,7 @@ export async function dialogMenu(
   ctx: ExtensionContext,
   title: string,
   rows: DialogRow[],
-  options: { selectedId?: string; footer?: string; saveId?: string; renderLegend?: (theme: Theme) => string } = {},
+  options: { selectedId?: string; footer?: string; saveId?: string; renderLegend?: (theme: Theme) => string; spaceSelect?: boolean } = {},
 ): Promise<string | undefined> {
   return ctx.ui.custom(
     (host, theme, _keys, done) =>
@@ -326,6 +327,7 @@ export async function dialogMenu(
         options.footer,
         options.saveId,
         options.renderLegend,
+        options.spaceSelect,
       ),
     DIALOG_OPTIONS,
   );
